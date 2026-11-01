@@ -1,0 +1,74 @@
+{
+  "name": "cheki",
+  "version": "1.6.0",
+  "description": "Verify Ethiopian bank payment receipts. Free, open source, no API key. 9 banks and wallets checked directly (CBE, BOA, Dashen, Awash, Siinqee, eBirr, ZamZam, CBE Birr, Bunna), plus Telebirr and M-Pesa through their official receipt pages.",
+  "license": "MIT",
+  "private": true,
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/1RB/cheki.git"
+  },
+  "bugs": {
+    "url": "https://github.com/1RB/cheki/issues"
+  },
+  "homepage": "https://cheki.et",
+  "scripts": {
+    "prebuild": "node scripts/download-tesseract-data.js",
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "eslint",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
+    "cli": "tsx src/cli/index.ts",
+    "probe": "tsx scripts/probe.ts",
+    "health-check": "tsx scripts/health-check.ts",
+    "smoke": "tsx scripts/smoke.ts",
+    "link-audit": "tsx scripts/link-audit.ts",
+    "indexnow": "tsx scripts/indexnow.ts"
+  },
+  "bin": {
+    "cheki": "src/cli/index.ts"
+  },
+  "dependencies": {
+    "@fontsource/inter": "^5.0.8",
+    "@hugeicons/core-free-icons": "^4.2.1",
+    "@hugeicons/react": "^1.1.7",
+    "@vercel/analytics": "^2.0.1",
+    "cheerio": "^1.0.0",
+    "clsx": "^2.1.1",
+    "jsqr": "^1.4.0",
+    "lucide-react": "^1.21.0",
+    "motion": "^12.41.0",
+    "next": "16.4.1",
+    "next-themes": "^0.4.6",
+    "pdf-parse": "^1.1.1",
+    "react": "19.2.4",
+    "react-dom": "19.2.4",
+    "sharp": "^0.35.5",
+    "shiki": "^4.2.0",
+    "tailwind-merge": "^3.6.0",
+    "tesseract.js": "^7.0.0",
+    "unpdf": "^1.6.2"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "^4",
+    "@testing-library/dom": "^10.4.2",
+    "@testing-library/react": "^16.3.3",
+    "@types/node": "^20",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "@vitest/coverage-v8": "^4.1.12",
+    "eslint": "^9",
+    "eslint-config-next": "16.4.1",
+    "jsdom": "^26.1.0",
+    "tailwindcss": "^4",
+    "tsx": "^4.22.4",
+    "typescript": "^5",
+    "vitest": "^4.1.12"
+  },
+  "overrides": {
+    "undici": "^7.30.1"
+  }
+}

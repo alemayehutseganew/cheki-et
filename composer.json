@@ -1,0 +1,45 @@
+{
+    "name": "cheki/cheki",
+    "description": "PHP SDK for cheki, a free Ethiopian receipt verification API: CBE, Telebirr, BOA, M-Pesa, Dashen, Awash, Siinqee, eBirr, ZamZam, CBE Birr, Bunna.",
+    "type": "library",
+    "homepage": "https://cheki.et",
+    "license": "MIT",
+    "keywords": [
+        "cheki",
+        "ethiopia",
+        "receipt",
+        "verification",
+        "banking",
+        "payment",
+        "sdk",
+        "cbe",
+        "telebirr",
+        "m-pesa",
+        "dashen",
+        "awash",
+        "zemen",
+        "eBirr"
+    ],
+    "authors": [
+        {
+            "name": "1RB",
+            "homepage": "https://cheki.et"
+        }
+    ],
+    "support": {
+        "issues": "https://github.com/1RB/cheki/issues",
+        "source": "https://github.com/1RB/cheki",
+        "docs": "https://cheki.et/docs"
+    },
+    "require": {
+        "php": ">=8.1",
+        "ext-json": "*",
+        "ext-curl": "*"
+    },
+    "autoload": {
+        "psr-4": {
+            "Cheki\\": "sdks/php/src/"
+        }
+    },
+    "minimum-stability": "stable"
+}

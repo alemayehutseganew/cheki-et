@@ -1,0 +1,395 @@
+{
+  "$comment": "Canonical cheki HTTP API contract fixtures. Every SDK test suite decodes these, and tests/contract/sdk-fixtures.test.ts checks that the real route handlers still produce the same shapes (same keys, same JSON types). Change a route and this file together, or CI fails. Values are illustrative; references and names are fake. receiptUrlCases: what getReceiptUrl must build (query params, any order) or reject. Current formats need no account; a legacy CBE FT reference does. served says how /api/receipt answers: a redirect to the bank's own page, or the bank's PDF. retryCases is SDK-only (not checked against the routes): what every SDK must do when an attempt gets that answer, served on every attempt with maxRetries 1. retried true means exactly 2 attempts, false exactly 1. A body or rawBody (non-JSON, as the platform sends on a 504) is the response.",
+  "limits": {
+    "batchMaxReceipts": 20,
+    "verifyBodyBytes": 16384,
+    "batchBodyBytes": 65536,
+    "parseBodyBytes": 262144,
+    "ocrImageBytes": 10485760,
+    "rateLimitPerMinute": { "verify": 30, "batch": 5, "parse": 20, "ocr": 20 },
+    "serverAttemptsPerReceipt": 2,
+    "serverMaxDurationSeconds": 60,
+    "sdkTimeoutSeconds": 65,
+    "sdkMaxRetries": 1,
+    "receiptDownloadBanks": ["cbe", "zemen", "dashen", "zamzam"]
+  },
+  "receiptUrlCases": [
+    { "name": "cbe_receipt_id", "format": "current", "served": "redirect", "bank": "cbe", "reference": "fHCxExampleRcpt01", "query": { "bank": "cbe", "reference": "fHCxExampleRcpt01" } },
+    { "name": "cbe_receipt_id_v2", "format": "current", "served": "redirect", "bank": "cbe", "reference": "v2-hfHCxExample0001", "query": { "bank": "cbe", "reference": "v2-hfHCxExample0001" } },
+    { "name": "cbe_receipt_id_ignores_account", "format": "current", "served": "redirect", "bank": "CBE", "reference": "fHCxExampleRcpt01", "account": "1000 0000 06171", "query": { "bank": "cbe", "reference": "fHCxExampleRcpt01" } },
+    { "name": "cbe_legacy_ft_with_account", "format": "legacy", "served": "pdf", "bank": "cbe", "reference": "FT26SAMPLE01", "account": "1000 0000 06171", "query": { "bank": "cbe", "reference": "FT26SAMPLE01", "account": "1000000006171" } },
+    { "name": "cbe_legacy_ft_without_account", "format": "legacy", "bank": "cbe", "reference": "FT26SAMPLE01", "error": true },
+    { "name": "cbe_legacy_ft_short_account", "format": "legacy", "bank": "cbe", "reference": "FT26SAMPLE01", "account": "1234", "error": true },
+    { "name": "cbe_legacy_ft_lowercase_spaced", "format": "legacy", "served": "pdf", "bank": "cbe", "reference": "ft26 sample01", "account": "1000 0000 06171", "query": { "bank": "cbe", "reference": "FT26SAMPLE01", "account": "1000000006171" } },
+    { "name": "dashen_ft_ref", "format": "current", "served": "redirect", "bank": "dashen", "reference": "B22WDTI00SAMPLE1", "query": { "bank": "dashen", "reference": "B22WDTI00SAMPLE1" } },
+    { "name": "dashen_ft_ref_lowercase", "format": "current", "served": "redirect", "bank": "dashen", "reference": "b22wdti00sample1", "query": { "bank": "dashen", "reference": "B22WDTI00SAMPLE1" } },
+    { "name": "zamzam_receipt_id", "format": "current", "served": "redirect", "bank": "ZamZam", "reference": "12345678", "query": { "bank": "zamzam", "reference": "12345678" } },
+    { "name": "zamzam_receipt_id_spaced", "format": "current", "served": "redirect", "bank": "zamzam", "reference": "1234 5678", "query": { "bank": "zamzam", "reference": "12345678" } },
+    { "name": "zamzam_non_numeric", "format": "current", "bank": "zamzam", "reference": "ABC-123", "error": true },
+    { "name": "zemen_token", "format": "current", "served": "pdf", "bank": "Zemen", "reference": "ZB123", "query": { "bank": "zemen", "reference": "ZB123" } },
+    { "name": "unsupported_bank", "bank": "telebirr", "reference": "X1", "error": true },
+    { "name": "prototype_name", "bank": "constructor", "reference": "X1", "error": true },
+    { "name": "path_traversal", "bank": "zemen", "reference": "../admin", "error": true },
+    { "name": "slash", "bank": "zemen", "reference": "a/b", "error": true }
+  ],
+  "retryCases": [
+    { "name": "verify_422_not_found", "method": "POST", "path": "/api/verify", "status": 422, "headers": {}, "body": { "success": false, "error": "[Telebirr] Receipt not found. Check the reference number." }, "retried": false },
+    { "name": "verify_500_internal", "method": "POST", "path": "/api/verify", "status": 500, "headers": { "retry-after": "0" }, "body": { "success": false, "error": "Internal server error." }, "retried": false },
+    { "name": "verify_502_geo_blocked", "method": "POST", "path": "/api/verify", "status": 502, "headers": { "retry-after": "0" }, "body": { "success": false, "error": "[Telebirr] Our server can't reach this bank (it blocks cloud IPs).", "fallbackUrl": "https://transactioninfo.ethiotelecom.et/receipt/CHQ0SAMPLE" }, "retried": false },
+    { "name": "verify_504_platform", "method": "POST", "path": "/api/verify", "status": 504, "headers": { "content-type": "text/plain" }, "rawBody": "An error occurred with your deployment\n\nFUNCTION_INVOCATION_TIMEOUT", "retried": false },
+    { "name": "verify_503_retry_after", "method": "POST", "path": "/api/verify", "status": 503, "headers": { "retry-after": "0" }, "body": { "success": false, "error": "Temporarily unavailable." }, "retried": true },
+    { "name": "verify_503_no_retry_after", "method": "POST", "path": "/api/verify", "status": 503, "headers": {}, "body": { "success": false, "error": "Temporarily unavailable." }, "retried": false },
+    { "name": "verify_503_not_retryable", "method": "POST", "path": "/api/verify", "status": 503, "headers": { "retry-after": "0" }, "body": { "success": false, "error": "Temporarily unavailable.", "retryable": false }, "retried": false },
+    { "name": "verify_429_retry_after", "method": "POST", "path": "/api/verify", "status": 429, "headers": { "retry-after": "0" }, "body": { "success": false, "error": "Too many requests from your network. Wait a minute and try again." }, "retried": true },
+    { "name": "verify_429_no_retry_after", "method": "POST", "path": "/api/verify", "status": 429, "headers": {}, "body": { "success": false, "error": "Too many requests from your network. Wait a minute and try again." }, "retried": false },
+    { "name": "verify_429_long_retry_after", "method": "POST", "path": "/api/verify", "status": 429, "headers": { "retry-after": "120" }, "body": { "success": false, "error": "Too many requests from your network. Wait a minute and try again." }, "retried": false },
+    { "name": "batch_500_internal", "method": "POST", "path": "/api/verify/batch", "status": 500, "headers": { "retry-after": "0" }, "body": { "success": false, "error": "Internal server error." }, "retried": false },
+    { "name": "batch_504_platform", "method": "POST", "path": "/api/verify/batch", "status": 504, "headers": { "content-type": "text/plain" }, "rawBody": "An error occurred with your deployment\n\nFUNCTION_INVOCATION_TIMEOUT", "retried": false },
+    { "name": "batch_429_retry_after", "method": "POST", "path": "/api/verify/batch", "status": 429, "headers": { "retry-after": "0" }, "body": { "success": false, "error": "Too many requests from your network. Wait a minute and try again." }, "retried": true },
+    { "name": "banks_500_internal", "method": "GET", "path": "/api/banks", "status": 500, "headers": { "retry-after": "0" }, "body": { "success": false, "error": "Internal server error." }, "retried": true },
+    { "name": "banks_504_platform", "method": "GET", "path": "/api/banks", "status": 504, "headers": { "content-type": "text/plain", "retry-after": "0" }, "rawBody": "An error occurred with your deployment\n\nFUNCTION_INVOCATION_TIMEOUT", "retried": true },
+    { "name": "banks_502_not_retryable", "method": "GET", "path": "/api/banks", "status": 502, "headers": { "retry-after": "0" }, "body": { "success": false, "error": "Bad gateway.", "retryable": false }, "retried": false },
+    { "name": "health_502", "method": "GET", "path": "/api/health", "status": 502, "headers": { "retry-after": "0" }, "body": { "success": false, "error": "Bad gateway." }, "retried": true },
+    { "name": "health_404", "method": "GET", "path": "/api/health", "status": 404, "headers": {}, "body": { "success": false, "error": "Not found." }, "retried": false }
+  ],
+  "cases": {
+    "verify_verified": {
+      "method": "POST",
+      "path": "/api/verify",
+      "status": 200,
+      "headers": { "x-cheki-cache": "miss" },
+      "body": {
+        "success": true,
+        "senderName": "ABEBE KEBEDE",
+        "senderAccount": "1****4321",
+        "receiverName": "TIGIST ALEMU",
+        "receiverAccount": "1****6171",
+        "amount": 1250.5,
+        "currency": "ETB",
+        "date": "2026-10-01",
+        "reference": "FT26SAMPLE01",
+        "reason": "Invoice 42",
+        "verified": true,
+        "bank": "Commercial Bank of Ethiopia",
+        "bankCode": "cbe",
+        "sourceUrl": "https://apps.cbe.com.et:100/?id=FT26SAMPLE0100006171",
+        "durationMs": 1830,
+        "cached": false
+      }
+    },
+    "verify_cached": {
+      "method": "POST",
+      "path": "/api/verify",
+      "status": 200,
+      "headers": { "x-cheki-cache": "hit" },
+      "body": {
+        "success": true,
+        "senderName": "ABEBE KEBEDE",
+        "receiverName": "TIGIST ALEMU",
+        "amount": 1250.5,
+        "currency": "ETB",
+        "reference": "FT26SAMPLE01",
+        "verified": true,
+        "bank": "Commercial Bank of Ethiopia",
+        "bankCode": "cbe",
+        "sourceUrl": "https://apps.cbe.com.et:100/?id=FT26SAMPLE0100006171",
+        "cached": true
+      }
+    },
+    "verify_order_id": {
+      "method": "POST",
+      "path": "/api/verify",
+      "status": 200,
+      "headers": { "x-cheki-cache": "miss" },
+      "body": {
+        "success": true,
+        "senderName": "ABEBE KEBEDE",
+        "senderAccount": "09****4321",
+        "receiverName": "TIGIST ALEMU",
+        "receiverAccount": "1000****6171",
+        "amount": 1250.5,
+        "currency": "ETB",
+        "date": "2026-10-01 09:15",
+        "reference": "DTS41AB2C90",
+        "orderId": "FT26SAMPLE01",
+        "transactionStatus": "Completed",
+        "verified": true,
+        "bank": "CBE Birr",
+        "bankCode": "cbebirr",
+        "sourceUrl": "https://cbepay1.cbe.com.et/aureceipt?TID=DTS41AB2C90&PH=251911004321",
+        "durationMs": 2100,
+        "cached": false
+      }
+    },
+    "verify_decoded_only": {
+      "method": "POST",
+      "path": "/api/verify",
+      "status": 200,
+      "headers": { "x-cheki-cache": "miss" },
+      "body": {
+        "success": true,
+        "senderName": "SELAM TADESSE",
+        "receiverName": "MERON HAILE",
+        "receiverAccount": "123456789",
+        "amount": 500,
+        "currency": "ETB",
+        "reference": "FT2610ABCD12",
+        "verified": false,
+        "decodedOnly": true,
+        "bank": "Bank of Abyssinia",
+        "bankCode": "boa",
+        "sourceUrl": "qr://boa",
+        "durationMs": 15400,
+        "cached": false
+      }
+    },
+    "parse_client_supplied": {
+      "method": "POST",
+      "path": "/api/parse",
+      "status": 200,
+      "headers": {},
+      "body": {
+        "success": true,
+        "verified": false,
+        "parsed": true,
+        "source": "client-supplied",
+        "label": "Parsed from your text, not checked with the bank",
+        "bank": "Telebirr",
+        "bankCode": "telebirr",
+        "reference": "CHQ0SAMPLE",
+        "senderName": "DAWIT GIRMA",
+        "receiverName": "HANA SHOP",
+        "amount": 320,
+        "currency": "ETB",
+        "date": "2026-10-02 14:11:05",
+        "sourceUrl": "(via paste/bookmarklet)",
+        "durationMs": 0,
+        "transactionStatus": "Completed"
+      }
+    },
+    "batch_mixed": {
+      "method": "POST",
+      "path": "/api/verify/batch",
+      "status": 200,
+      "headers": {},
+      "body": {
+        "success": true,
+        "results": [
+          {
+            "success": true,
+            "senderName": "ABEBE KEBEDE",
+            "receiverName": "TIGIST ALEMU",
+            "amount": 1250.5,
+            "currency": "ETB",
+            "reference": "FT26SAMPLE01",
+            "verified": true,
+            "bank": "Commercial Bank of Ethiopia",
+            "bankCode": "cbe",
+            "sourceUrl": "https://apps.cbe.com.et:100/?id=FT26SAMPLE0100006171",
+            "durationMs": 1830,
+            "cached": false
+          },
+          {
+            "success": true,
+            "senderName": "SELAM TADESSE",
+            "receiverName": "MERON HAILE",
+            "amount": 500,
+            "currency": "ETB",
+            "reference": "FT2610ABCD12",
+            "verified": false,
+            "decodedOnly": true,
+            "bank": "Bank of Abyssinia",
+            "bankCode": "boa",
+            "sourceUrl": "qr://boa",
+            "durationMs": 15400,
+            "cached": false
+          },
+          {
+            "success": false,
+            "error": "[Telebirr] Receipt not found. Check the reference number.",
+            "status": 422
+          }
+        ],
+        "cached": 0,
+        "total": 3,
+        "verified": 1,
+        "failed": 2
+      }
+    },
+    "banks": {
+      "method": "GET",
+      "path": "/api/banks",
+      "status": 200,
+      "headers": {},
+      "body": {
+        "banks": [
+          {
+            "id": "cbe",
+            "name": "Commercial Bank of Ethiopia",
+            "swift": "CBETETAA",
+            "type": "bank",
+            "status": "live",
+            "requiresAccount": false,
+            "accountDigits": 8,
+            "endpoint": "https://mb.cbe.com.et/api/v1/transactions/public/transaction-detail/{ref}",
+            "color": "#502878",
+            "initials": "CBE",
+            "formats": [
+              { "id": "cbe-receipt-id", "status": "current", "label": "Receipt ID or mbreciept.cbe.com.et link", "inputs": ["receiptId"], "responseType": "json", "supported": true, "confidence": "verified" },
+              { "id": "cbe-ft-pdf", "status": "legacy", "label": "FT reference + last 8 digits of the receiving account", "inputs": ["reference", "account"], "accountDigits": 8, "responseType": "pdf", "supported": true, "confidence": "inferred" }
+            ]
+          },
+          {
+            "id": "telebirr",
+            "name": "Telebirr",
+            "type": "mobile",
+            "status": "live",
+            "requiresAccount": false,
+            "endpoint": "https://transactioninfo.ethiotelecom.et/receipt/{ref}",
+            "color": "#00A0DC",
+            "initials": "TB",
+            "formats": [
+              { "id": "telebirr-receipt-html", "status": "current", "label": "Transaction number", "inputs": ["reference"], "responseType": "html", "supported": true, "confidence": "verified" },
+              { "id": "telebirr-receipt-qr", "status": "current", "label": "Receipt QR code", "inputs": ["qr"], "responseType": "html", "supported": true, "confidence": "verified" }
+            ]
+          },
+          {
+            "id": "cbebirr",
+            "name": "CBE Birr",
+            "type": "wallet",
+            "status": "live",
+            "beta": true,
+            "requiresAccount": false,
+            "requiresPhone": true,
+            "endpoint": "https://cbepay1.cbe.com.et/aureceipt?TID={ref}&PH={phone}",
+            "color": "#502878",
+            "initials": "CB",
+            "formats": [
+              { "id": "cbebirr-aureceipt", "status": "current", "label": "Receipt number + payer phone", "inputs": ["reference", "phone"], "responseType": "pdf", "supported": true, "confidence": "verified" }
+            ]
+          },
+          {
+            "id": "nib",
+            "name": "Nib International Bank",
+            "swift": "NIBIETAA",
+            "type": "bank",
+            "status": "in-development",
+            "requiresAccount": false,
+            "endpoint": "receipt.ebirr.com/nib",
+            "color": "#1d4ed8",
+            "initials": "Nib Bank",
+            "formats": [
+              { "id": "ebirr-nib", "status": "current", "label": "eBirr receipt link", "inputs": ["link"], "responseType": "html", "supported": true, "confidence": "inferred" }
+            ]
+          },
+          {
+            "id": "mpesa",
+            "name": "M-Pesa Ethiopia",
+            "type": "mobile",
+            "status": "live",
+            "beta": true,
+            "requiresAccount": false,
+            "endpoint": "https://m-pesabusiness.safaricom.et/api/receipt/getReceipt?trxNo={ref}",
+            "color": "#00A651",
+            "initials": "MP",
+            "formats": [
+              { "id": "mpesa-getreceipt", "status": "current", "label": "Transaction number", "inputs": ["reference"], "responseType": "pdf-in-json", "supported": true, "confidence": "inferred" }
+            ]
+          },
+          {
+            "id": "zamzam",
+            "name": "ZamZam Bank",
+            "swift": "ZAMZETAA",
+            "type": "bank",
+            "status": "live",
+            "beta": true,
+            "requiresAccount": false,
+            "requiresPhone": false,
+            "endpoint": "https://receipt-backend.zamzambank.com.et/api/v1/invoice/{ref}",
+            "color": "#0d9488",
+            "initials": "ZZ",
+            "formats": [
+              { "id": "zamzam-invoice-json", "status": "current", "label": "Receipt link or receipt id", "inputs": ["receiptId"], "responseType": "json", "supported": true, "confidence": "verified" }
+            ]
+          }
+        ]
+      }
+    },
+    "health": {
+      "method": "GET",
+      "path": "/api/health",
+      "status": 200,
+      "headers": { "cache-control": "public, max-age=60, s-maxage=300, stale-while-revalidate=600" },
+      "body": {
+        "status": "ok",
+        "checkedAt": "2026-10-11T09:00:00.000Z",
+        "banks": [
+          { "id": "cbe", "name": "Commercial Bank of Ethiopia", "status": "reachable", "latencyMs": 812 },
+          { "id": "telebirr", "name": "Telebirr", "status": "geo-blocked", "latencyMs": 5004 },
+          { "id": "nib", "name": "Nib International Bank", "status": "in-development", "latencyMs": 0 }
+        ],
+        "cached": false
+      }
+    },
+    "error_400_missing_input": {
+      "method": "POST",
+      "path": "/api/verify",
+      "status": 400,
+      "headers": {},
+      "body": { "success": false, "error": "Reference number, receipt URL, or QR data is required." }
+    },
+    "error_400_batch_too_large": {
+      "method": "POST",
+      "path": "/api/verify/batch",
+      "status": 400,
+      "headers": {},
+      "body": { "success": false, "error": "Maximum 20 receipts per batch." }
+    },
+    "error_404_unsupported_bank": {
+      "method": "POST",
+      "path": "/api/verify",
+      "status": 404,
+      "headers": {},
+      "body": { "success": false, "error": "Unsupported bank: cbx. Did you mean cbe?" }
+    },
+    "error_413_body_too_large": {
+      "method": "POST",
+      "path": "/api/verify",
+      "status": 413,
+      "headers": {},
+      "body": { "success": false, "error": "Request body is too large (limit 16 KB)." }
+    },
+    "error_422_not_found": {
+      "method": "POST",
+      "path": "/api/verify",
+      "status": 422,
+      "headers": {},
+      "body": { "success": false, "error": "[Telebirr] Receipt not found. Check the reference number." }
+    },
+    "error_429_rate_limited": {
+      "method": "POST",
+      "path": "/api/verify",
+      "status": 429,
+      "headers": { "retry-after": "17" },
+      "body": { "success": false, "error": "Too many requests from your network. Wait a minute and try again." }
+    },
+    "error_502_geo_blocked": {
+      "method": "POST",
+      "path": "/api/verify",
+      "status": 502,
+      "headers": {},
+      "body": {
+        "success": false,
+        "error": "[Telebirr] Our server can't reach this bank (it blocks cloud IPs). Open the receipt directly: https://transactioninfo.ethiotelecom.et/receipt/CHQ0SAMPLE",
+        "fallbackUrl": "https://transactioninfo.ethiotelecom.et/receipt/CHQ0SAMPLE"
+      }
+    },
+    "error_500_internal": {
+      "method": "POST",
+      "path": "/api/verify",
+      "status": 500,
+      "headers": {},
+      "body": { "success": false, "error": "Internal server error." }
+    }
+  }
+}

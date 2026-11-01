@@ -1,0 +1,51 @@
+/**
+ * Parser registry - plugin system for bank parsers.
+ *
+ * Each parser registers itself. The verifier looks up the parser by bank ID.
+ * To add a new bank: create a parser file, register it, add to banks.json.
+ */
+import type { BankManifestEntry } from "../core/types";
+
+export interface RegisteredParser {
+  bankId: string;
+  bankName: string;
+  responseType: "pdf" | "html" | "json";
+  requiresAccount: boolean;
+  accountDigits?: number;
+  requiresPhone: boolean;
+  buildUrl(ref: string, account?: string, phone?: string): string;
+  /** Validate and canonicalise a reference before it is put in a URL. */
+  normalizeReference(ref: string): import("../security/reference").Checked<string>;
+  /** Canonicalise an already-checked phone number (CBE Birr: 251XXXXXXXXX). Optional. */
+  normalizePhone?(phone: string): import("../security/reference").Checked<string>;
+  parse(data: string | Buffer, contentType: string): import("../core/types").ParsedReceipt;
+  /** Bank-specific request headers (e.g. ZamZam's public Basic credential), for the health probe. */
+  probeHeaders?(): Record<string, string>;
+  fetchReceipt(
+    ref: string,
+    account?: string,
+    phone?: string,
+    options?: { fallbackUrl?: string }
+  ): Promise<import("../core/types").Result<import("../core/types").HttpResult>>;
+}
+
+const registry = new Map<string, RegisteredParser>();
+
+export function registerParser(parser: RegisteredParser): void {
+  if (registry.has(parser.bankId)) {
+    throw new Error(`Parser already registered for bank: ${parser.bankId}`);
+  }
+  registry.set(parser.bankId, parser);
+}
+
+export function getParser(bankId: string): RegisteredParser | undefined {
+  return registry.get(bankId);
+}
+
+export function getRegisteredBankIds(): string[] {
+  return Array.from(registry.keys());
+}
+
+export function isBankSupported(bankId: string): boolean {
+  return registry.has(bankId);
+}

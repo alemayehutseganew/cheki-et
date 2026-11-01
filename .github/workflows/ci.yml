@@ -1,0 +1,202 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  # Supersede stale PR runs, but let every push to main finish (the daily
+  # endpoint-health commit and merges land there back to back).
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  web:
+    name: Web app (lint, typecheck, test, build)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      # The lockfile must match package.json; npm ci fails the job if it drifts.
+      - run: npm ci --no-audit --no-fund
+
+      # Errors fail the build. Known frontend debt is downgraded to warnings in
+      # eslint.config.mjs until it is fixed.
+      - run: npm run lint
+
+      - run: npx tsc --noEmit
+
+      # Includes tests/contract (SDK fixtures vs route handlers) and tests/sdk (TS SDK).
+      - run: npx vitest run
+
+      - run: npm run build
+
+      # The same smoke test that runs against production after a deploy
+      # (scripts/smoke.ts, docs/RELEASING.md), here against the build above.
+      - name: Smoke test (next start)
+        run: |
+          npx next start -p 3000 > next-start.log 2>&1 &
+          for i in $(seq 1 30); do curl -fsS -o /dev/null http://localhost:3000/ && break; sleep 1; done
+          npm run smoke -- http://localhost:3000 || { cat next-start.log; exit 1; }
+          # Every sitemap page needs an in-content link from another page.
+          npm run link-audit -- http://localhost:3000
+
+  sdk-typescript:
+    name: TypeScript SDK
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: sdks/typescript
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm install --no-audit --no-fund
+      - run: npm run build
+      - name: Committed build output matches src
+        run: git diff --exit-code -- index.js index.d.ts
+
+  sdk-go:
+    name: Go SDK (Go ${{ matrix.go }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # The go.mod floor (1.21) and the current release.
+        go: ["1.21", "stable"]
+    defaults:
+      run:
+        working-directory: sdks/go
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ matrix.go }}
+      - name: gofmt
+        run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
+      - run: go vet ./...
+      - run: go test -race ./...
+
+  sdk-php:
+    name: PHP SDK (PHP ${{ matrix.php }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        php: ["8.1", "8.3", "8.4"]
+    defaults:
+      run:
+        working-directory: sdks/php
+    steps:
+      - uses: actions/checkout@v4
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ matrix.php }}
+          extensions: curl, json
+          tools: phpunit:10, composer
+          coverage: none
+      - name: Lint
+        run: find src tests examples -name '*.php' -print0 | xargs -0 -n1 php -l
+      - run: phpunit
+      # Packagist installs the git archive of the tag (.gitattributes
+      # export-ignore): it must hold only the PHP SDK and still autoload.
+      - name: Packagist dist is SDK-only and autoloads
+        run: ../../scripts/check-php-dist.sh
+
+  sdk-dart:
+    name: Dart SDK
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: sdks/dart
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dart-lang/setup-dart@v1
+        with:
+          sdk: stable
+      - run: dart pub get
+      - run: dart analyze --fatal-infos
+      - run: dart test
+      # The lowest versions the pubspec allows (http 1.4.0 decodes JSON as UTF-8).
+      - name: Lower bounds still analyze
+        run: dart pub downgrade && dart analyze --fatal-infos lib && dart pub upgrade
+      - name: pub.dev package check (fails on any warning)
+        run: dart pub publish --dry-run
+
+  python-test:
+    name: Python SDK (Python ${{ matrix.python }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.10", "3.11", "3.12", "3.13", "3.14"]
+    defaults:
+      run:
+        working-directory: python
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+
+      - name: Install dependencies
+        run: |
+          pip install uv
+          uv pip install --system -e ".[dev]"
+
+      - run: ruff check .
+      - run: mypy
+      - run: pytest -q
+      # The API client must import and work with only its runtime
+      # dependencies; direct mode explains the cheki[direct] extra.
+      - name: Installs without the direct-mode extras
+        if: matrix.python == '3.12'
+        run: |
+          python -m venv /tmp/slim
+          /tmp/slim/bin/pip install --quiet .
+          /tmp/slim/bin/python -c "import cheki, warnings; warnings.simplefilter('ignore'); c = cheki.ChekiClient(); print(c.get_receipt_url('cbe', 'fHCxExampleRcpt01'))
+          try:
+              cheki.verify('cbe', 'FT1')
+          except cheki.DirectModeUnavailableError as e:
+              print('direct mode:', e)
+          else:
+              raise SystemExit('direct mode should need cheki[direct]')"
+
+  version-check:
+    name: Check version sync
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Check version alignment
+        run: |
+          WEB=$(node -p "require('./package.json').version")
+          TS=$(node -p "require('./sdks/typescript/package.json').version")
+          PY=$(grep '^version = ' python/pyproject.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
+
+          if [ "$WEB" != "$TS" ]; then
+            echo "❌ Version mismatch: web ($WEB) vs TypeScript SDK ($TS)"
+            exit 1
+          fi
+
+          if [ "$WEB" != "$PY" ]; then
+            echo "❌ Version mismatch: web ($WEB) vs Python SDK ($PY)"
+            exit 1
+          fi
+
+          echo "✅ All versions synced: $WEB"

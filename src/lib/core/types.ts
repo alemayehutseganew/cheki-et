@@ -1,0 +1,364 @@
+/**
+ * cheki core - Result types, Receipt entity, errors.
+ *
+ * This module has ZERO runtime dependencies. It defines the domain model
+ * and the contracts (ports) that adapters implement.
+ *
+ * Architecture: Hexagonal / Ports & Adapters
+ *   - Core defines interfaces (ports)
+ *   - Parsers, HTTP client, URL detector implement those interfaces (adapters)
+ *   - API routes and CLI are driving adapters that call the Verifier
+ */
+
+// ─── Result Type (discriminated union, Matt Pocock style) ───────────
+
+export type Result<T, E = ChekiError> =
+  | { ok: true; value: T }
+  | { ok: false; error: E };
+
+export const ok = <T>(value: T): Result<T, never> => ({ ok: true, value });
+export const err = <E>(error: E): Result<never, E> => ({ ok: false, error });
+
+// ─── Branded Types for domain safety ────────────────────────────────
+
+export type Brand<T, B> = T & { readonly __brand: B };
+export type BankId = Brand<string, "BankId">;
+export type Reference = Brand<string, "Reference">;
+
+// ─── Error Hierarchy (discriminated unions, not classes) ────────────
+
+export type ChekiError =
+  | { kind: "BANK_NOT_SUPPORTED"; bank: string; suggestion?: string; message?: string }
+  | { kind: "REF_ERROR"; bank: string; message: string }
+  | { kind: "ENDPOINT_ERROR"; bank: string; message: string; fallbackUrl?: string }
+  | {
+      kind: "EXTRACTION_ERROR";
+      bank: string;
+      message: string;
+      /**
+       * The bank page cheki asked, when the bank answered but did not confirm
+       * the receipt, so anyone can open it and see the bank's answer.
+       */
+      checkedUrl?: string;
+    }
+  | { kind: "MISSING_INPUT"; field: string; message: string }
+  | { kind: "INTERNAL_ERROR"; message: string };
+
+export function errorToHttpStatus(error: ChekiError): number {
+  switch (error.kind) {
+    case "BANK_NOT_SUPPORTED": return 404;
+    case "REF_ERROR": return 400;
+    case "MISSING_INPUT": return 400;
+    case "ENDPOINT_ERROR": return 502;
+    case "EXTRACTION_ERROR": return 422;
+    case "INTERNAL_ERROR": return 500;
+    default: {
+      const _exhaustive: never = error;
+      return 500;
+    }
+  }
+}
+
+export function errorToMessage(error: ChekiError): string {
+  switch (error.kind) {
+    case "BANK_NOT_SUPPORTED":
+      if (error.message) return error.message;
+      return `Unsupported bank: ${error.bank}.${error.suggestion ? ` Did you mean ${error.suggestion}?` : ""}`;
+    case "REF_ERROR":
+      return `[${error.bank}] ${error.message}`;
+    case "ENDPOINT_ERROR":
+      // The message ends with "Open the receipt directly:" when there is a link.
+      return `[${error.bank}] ${error.message}${error.fallbackUrl ? ` ${error.fallbackUrl}` : ""}`;
+    case "EXTRACTION_ERROR":
+      return `[${error.bank}] ${error.message}`;
+    case "MISSING_INPUT":
+      return error.message;
+    case "INTERNAL_ERROR":
+      return error.message;
+    default: {
+      const _exhaustive: never = error;
+      return "Unknown error";
+    }
+  }
+}
+
+// ─── Receipt Entity ─────────────────────────────────────────────────
+
+export interface Receipt {
+  verified: boolean;
+  bank: string;
+  bankCode: string;
+  reference: string;
+  sourceUrl: string;
+  senderName?: string;
+  senderAccount?: string;
+  receiverName?: string;
+  receiverAccount?: string;
+  amount?: number;
+  currency?: string;
+  date?: string;
+  branch?: string;
+  reason?: string;
+  transactionType?: string;
+  durationMs?: number;
+  // Telebirr / wallet-specific
+  invoiceNumber?: string;
+  transactionStatus?: string;
+  settledAmount?: number;
+  stampDuty?: number;
+  discountAmount?: number;
+  serviceFee?: number;
+  serviceFeeVat?: number;
+  totalPaid?: number;
+  amountInWords?: string;
+  paymentMode?: string;
+  paymentChannel?: string;
+  bankAccountNumber?: string;
+  bankAccountName?: string;
+  orderId?: string;
+  /**
+   * True when the data was decoded from a BOA QR code but could not be
+   * confirmed with the bank (it was unreachable). Always paired with
+   * verified: false. A QR payload can be forged, so this is never proof.
+   */
+  decodedOnly?: boolean;
+}
+
+// ─── Verify Request (input) ─────────────────────────────────────────
+
+export interface VerifyRequest {
+  bank: string;
+  reference?: string;
+  accountNumber?: string;
+  phoneNumber?: string;
+  qrData?: string;
+}
+
+// ─── Parser Port (interface that bank parsers implement) ────────────
+
+export interface ParserPort {
+  readonly bankId: string;
+  readonly bankName: string;
+  readonly responseType: "pdf" | "html" | "json";
+  readonly requiresAccount: boolean;
+  readonly accountDigits?: number;
+  readonly requiresPhone: boolean;
+
+  buildUrl(ref: string, account?: string, phone?: string): string;
+  parse(data: string | Buffer, contentType: string): ParsedReceipt;
+}
+
+export interface ParsedReceipt {
+  verified: boolean;
+  senderName?: string;
+  senderAccount?: string;
+  receiverName?: string;
+  receiverAccount?: string;
+  amount?: number;
+  currency?: string;
+  date?: string;
+  reference?: string;
+  branch?: string;
+  reason?: string;
+  transactionType?: string;
+  raw?: string;
+  // Telebirr / wallet-specific fields
+  invoiceNumber?: string;
+  transactionStatus?: string;
+  settledAmount?: number;
+  stampDuty?: number;
+  discountAmount?: number;
+  serviceFee?: number;
+  serviceFeeVat?: number;
+  totalPaid?: number;
+  amountInWords?: string;
+  paymentMode?: string;
+  paymentChannel?: string;
+  bankAccountNumber?: string;
+  bankAccountName?: string;
+  orderId?: string;
+}
+
+// ─── HTTP Port (interface for fetching from banks) ──────────────────
+
+export interface HttpPort {
+  fetch(
+    url: string,
+    options: HttpFetchOptions
+  ): Promise<Result<HttpResult>>;
+}
+
+export interface HttpFetchOptions {
+  method?: "GET" | "POST";
+  headers?: Record<string, string>;
+  timeoutMs?: number;
+  maxRetries?: number;
+  geoBlocked?: boolean;
+  fallbackUrl?: string;
+}
+
+export interface HttpResult {
+  status: number;
+  data: string | Buffer;
+  contentType: string;
+}
+
+// ─── Bank Manifest Entry ────────────────────────────────────────────
+
+export interface BankFaqEntry {
+  q: string;
+  a: string;
+}
+
+export interface BankSeoEntry {
+  title: string;
+  description: string;
+  keywords: string[];
+}
+
+export interface BankRefPattern {
+  source: string;
+  flags: string;
+}
+
+/**
+ * One receipt format a bank has used. A bank's `formats` are ordered: current
+ * formats first, then legacy (still accepted and fetched), then deprecated
+ * (links still recognised for their reference, never fetched).
+ */
+export type ReceiptFormatStatus = "current" | "legacy" | "deprecated";
+
+/** What a format needs from the user. "qr": a receipt QR code (scanned, uploaded or pasted). */
+export type ReceiptFormatInputName = "reference" | "receiptId" | "link" | "account" | "phone" | "qr";
+
+export interface ReceiptFormatInput {
+  name: ReceiptFormatInputName;
+  label: string;
+  example?: string;
+  /** For `account`: how many trailing digits the bank uses. */
+  digits?: number;
+}
+
+/**
+ * What a receipt endpoint answers with, as recorded in banks.json.
+ * "pdf-in-json": a JSON envelope whose field holds the receipt as a
+ * base64-encoded PDF (M-Pesa's getReceipt). Parsers still declare the wire
+ * format ("json") as their own responseType.
+ */
+export type ManifestResponseType = "pdf" | "html" | "json" | "pdf-in-json";
+
+export interface ReceiptFormat {
+  id: string;
+  status: ReceiptFormatStatus;
+  label: string;
+  /** Registered parser that fetches this format. Absent: cheki does not fetch it (not supported yet, or deprecated). */
+  parser?: string;
+  /**
+   * Input-only format: cheki reads the reference out of it (on the device or
+   * the server) and checks it through the format with this id, exactly as if
+   * the reference had been typed. Never fetched, never proof on its own.
+   * Telebirr's receipt QR is one.
+   */
+  via?: string;
+  /** URL template cheki fetches. Its host is allowlisted when the format has a parser and is not deprecated. */
+  endpoint?: string;
+  /** URL template of the receipt page people share or open. */
+  link?: string;
+  /** Hosts whose links are recognised for this format (reference extraction only). */
+  linkHosts?: string[];
+  inputs: ReceiptFormatInput[];
+  /** References this format accepts. Used to pick a format by the shape of the input. */
+  refPattern?: BankRefPattern;
+  responseType: ManifestResponseType;
+  headers?: Record<string, string>;
+  /** How GET /api/receipt serves it: a 302 to `link`, or the bank's PDF proxied. */
+  receiptPage?: "redirect" | "pdf";
+  /** YYYY-MM or YYYY-MM-DD, when known. */
+  since?: string;
+  deprecatedAt?: string;
+  replacedBy?: string;
+  /** "verified": observed by cheki; "inferred": from another source, see evidence. */
+  confidence: "verified" | "inferred";
+  evidence: string;
+  notes?: string;
+  /** Shown when the input matches this format but a required field is missing. */
+  missingHint?: string;
+}
+
+export interface EndpointHistoryEntry {
+  date: string;
+  formatId?: string;
+  change: string;
+  source?: string;
+}
+
+/**
+ * A bank's head-office SWIFT/BIC, shown on its page as reference info.
+ * `registry: "confirmed"` means SWIFT's own BIC search returned this code and
+ * it matches the bank's website. `"not-checked"` means the SWIFT registry was
+ * not searched: the code comes from the bank's website or the National Bank
+ * of Ethiopia plus one independent cross-check, and the page says so. A code
+ * without two agreeing sources is left out rather than guessed.
+ */
+export interface BankSwift {
+  /** 8-character head-office BIC (11 with XXX is the same office). */
+  bic: string;
+  /** Source pages: the bank's own site (or NBE) first, then the cross-check. */
+  sources: string[];
+  /** ISO date (YYYY-MM-DD) the sources were last read. */
+  checkedAt: string;
+  /** Whether SWIFT's BIC search itself confirmed the code. */
+  registry: "confirmed" | "not-checked";
+}
+
+export interface BankManifestEntry {
+  id: string;
+  name: string;
+  shortName?: string;
+  /** Head-office SWIFT/BIC, reference only (see BankSwift). Absent for wallets and unconfirmed codes. */
+  swift?: BankSwift;
+  type: "bank" | "wallet" | "mobile";
+  status: "live" | "in-development";
+  /**
+   * Live, but the parser is only partly confirmed: not yet confirmed with a
+   * real receipt (M-Pesa, whose parser follows other verifiers' source), or
+   * confirmed with a single receipt shape and an inferred field mapping
+   * (ZamZam). Copy and clients should label it beta; `betaNote` says why.
+   * Cleared once real receipts settle it.
+   */
+  beta?: boolean;
+  betaNote?: string;
+  parser: string;
+  responseType: ManifestResponseType;
+  requiresAccount: boolean;
+  accountLabel?: string;
+  accountDigits?: number;
+  requiresPhone: boolean;
+  endpoint: string;
+  endpointFormat?: string;
+  /**
+   * How the receipt endpoint authenticates, when it does (ZamZam: a public
+   * Basic credential from the bank's own web app, kept in the parser).
+   * Absent: the endpoint needs no authentication.
+   */
+  endpointAuth?: string;
+  sslVerify: boolean;
+  headers?: Record<string, string>;
+  geoBlocked?: boolean;
+  notes?: string;
+  color: string;
+  initials: string;
+  refPattern?: BankRefPattern | string;
+  refPrefixes?: string[];
+  description?: string;
+  referenceFormat?: string;
+  referenceExample?: string;
+  howToVerify?: string[];
+  useCases?: string[];
+  faq?: BankFaqEntry[];
+  seo?: BankSeoEntry;
+  /** Receipt formats, current first. Top-level endpoint fields describe the first supported one. */
+  formats?: ReceiptFormat[];
+  /** Dated endpoint changes (host moves, format switches, observed outages). */
+  endpointHistory?: EndpointHistoryEntry[];
+}

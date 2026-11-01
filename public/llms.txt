@@ -1,0 +1,100 @@
+# cheki
+
+> cheki checks an Ethiopian bank or mobile money receipt against the issuing bank's own public receipt endpoint and returns the result as JSON. It is free and MIT licensed, with no signup and no API key. The hosted API at https://cheki.et has per-IP rate limits; self-host for more.
+
+A result counts as confirmed only when the response has `"verified": true`. A 200 with `"verified": false` is not proof of payment: the bank may not know the receipt, a BOA QR code may only have been decoded (`"decodedOnly": true`), or the text may only have been parsed from what the caller sent (`"parsed": true`, `/api/parse`). Compare `amount` and `receiverAccount` with what you expected before releasing goods.
+
+There are 11 live banks (M-Pesa, ZamZam, CBE Birr and Bunna in beta) and 20 in research. The hosted API checks 9 directly; `telebirr` and `mpesa` block cloud servers, so it answers them with a 502 and `fallbackUrl` (the official receipt page) until a local relay exists. `GET /api/banks` is the source of truth: each bank's `id`, `status`, `beta` flag and receipt `formats`, current format first, with the inputs each format needs. Bank ids and what to send as `reference`:
+
+- `cbe` Commercial Bank of Ethiopia: the Receipt ID or receipt link (`https://mbreciept.cbe.com.et/{Receipt ID}`, also in the app's QR code), e.g. `fHCxExampleRcpt01`. No account number. Older receipts that only show an FT reference (`FT` plus 10 letters and digits, e.g. `FT26SAMPLE01`) also need `accountNumber`, at least the last 8 digits of the receiving account (e.g. `00006171`); that legacy host is often unreachable.
+- `telebirr` Telebirr: the 10-character transaction number with a 2 or 3 letter prefix (DET, CHQ, DAB, DJA, DEL, ADQ, ...), e.g. `DET0SAMPLE`, or the receipt's Payment QR code as `qrData`. Blocks cloud servers: the hosted API returns 502 with `fallbackUrl`.
+- `boa` Bank of Abyssinia: the slip link (`cs.bankofabyssinia.com/slip/?trx=...`), or the reference (e.g. `AB12345678`) plus `accountNumber`, the last 5 digits of the account on the receipt. Inter-bank transfers are checked from the receipt QR code.
+- `mpesa` M-Pesa Ethiopia (beta): the transaction number, e.g. `SE12345678`. Blocks cloud servers: the hosted API returns 502 with `fallbackUrl`.
+- `dashen` Dashen Bank: the 16-character FT Ref, e.g. `B22WDTI00SAMPLE1`, not the longer Transaction Ref. Old Dashen Super App links are read for their FT Ref.
+- `awash` Awash Bank: the share link from the SMS (`awashpay.awashbank.com:8225/-{token}`).
+- `siinqee` Siinqee Bank: the eBirr receipt link (`receipt.ebirr.com/siinqee/{token}`). Newer `receipts.siinqeebank.com` links are not supported yet.
+- `ebirr` eBirr: a receipt link (`receipt.ebirr.com/{tenant}/{token}`), including links issued for Nib, Wegagen, Ahadu and KAAFI.
+- `zamzam` ZamZam Bank (beta): the receipt link (`receipt.zamzambank.com.et/receipt/{id}`) or its numeric id. The account number in the answer is masked.
+- `cbebirr` CBE Birr (beta): the receipt number (TID, 10 or 11 letters and digits, e.g. `CHK0000001`) plus `phoneNumber`, the payer's phone (`09XXXXXXXX` or `2519XXXXXXXX`). The receipt's QR code is its own receipt link and can be sent as `qrData` with no phone. Phone numbers in the answer are masked. An empty "Auto Receipt" page is reported as could not confirm (usually the number and phone don't match), never as not found.
+- `bunna` Bunna Bank (beta): the receipt link (`online.bunnabanksc.com/receipt/#/{token}`) or the receipt's QR code (`online.bunnabanksc.com/#/receipt-v2/{token}`). The transaction number printed on the receipt does not work on its own. Account numbers in the answer are masked by Bunna. A "did not return a receipt" answer is not confirmed, never proof of a fake.
+- In development, not verifiable yet: Zemen Bank (in development) has a parser waiting on a confirmed real receipt; the other banks need a receipt and an endpoint.
+
+Where cheki reads each bank and what comes back:
+
+- CBE: `https://mb.cbe.com.et/api/v1/transactions/public/transaction-detail/{RECEIPT_ID}` returns JSON. Legacy: `https://apps.cbe.com.et:100/?id={FT_REFERENCE}{LAST_8_DIGITS}` returns a PDF.
+- Telebirr: `https://transactioninfo.ethiotelecom.et/receipt/{REFERENCE}` returns HTML.
+- BOA: `https://cs.bankofabyssinia.com/api/onlineSlip/getDetails/?id={REFERENCE}{LAST_5_DIGITS}` returns JSON.
+- M-Pesa: `https://m-pesabusiness.safaricom.et/api/receipt/getReceipt?trxNo={REFERENCE}` returns a JSON envelope `{responseCode, responseDescription, base64Data}` whose `base64Data` is a PDF receipt; cheki decodes and parses the PDF. It does not return flat JSON fields.
+- Dashen: `https://receipts.dashenbanksc.com/receipt/{FT_REF}` returns HTML.
+- Awash: the share link returns HTML. Siinqee and eBirr: `https://receipt.ebirr.com/{TENANT}/{TOKEN}` returns HTML.
+- ZamZam: `https://receipt-backend.zamzambank.com.et/api/v1/invoice/{RECEIPT_ID}` returns JSON. It expects an HTTP Basic credential that ZamZam ships in its own public receipt web app; cheki sends it and never returns it.
+- CBE Birr: `https://cbepay1.cbe.com.et/aureceipt?TID={RECEIPT_NUMBER}&PH={251XXXXXXXXX}` returns a PDF receipt.
+
+Verify one receipt (call it from a server; the verify routes send no CORS headers):
+
+```bash
+curl -X POST https://cheki.et/api/verify \
+  -H "Content-Type: application/json" \
+  -d '{"bank":"cbe","reference":"https://mbreciept.cbe.com.et/fHCxExampleRcpt01"}'
+```
+
+Body fields: `bank` (an id above), `reference` or `qrData`, `accountNumber` for BOA and legacy CBE, `phoneNumber` for CBE Birr. References are not case-sensitive for `cbe` FT references, `boa`, `telebirr`, `mpesa`, `dashen` and `cbebirr`: the server uppercases them and drops spaces and dashes typed inside (`det0sample` is `DET0SAMPLE`). CBE Receipt IDs, Awash and eBirr links and ZamZam ids are used exactly as sent. A verified response (illustrative values from the shared SDK test fixtures):
+
+```json
+{"success": true, "verified": true, "bank": "Commercial Bank of Ethiopia", "bankCode": "cbe", "reference": "FT26SAMPLE01", "amount": 1250.5, "currency": "ETB", "senderName": "ABEBE KEBEDE", "senderAccount": "1****4321", "receiverName": "TIGIST ALEMU", "receiverAccount": "1****6171", "date": "2026-10-01", "reason": "Invoice 42", "sourceUrl": "https://mbreciept.cbe.com.et/fHCxExampleRcpt01", "cached": false}
+```
+
+Batch: `POST /api/verify/batch` with `{"receipts": [{"bank": "cbe", "reference": "https://mbreciept.cbe.com.et/fHCxExampleRcpt01"}, {"bank": "telebirr", "reference": "DET0SAMPLE"}]}`, up to 20 receipts. The response has `results` (one per receipt, in order) and the counts `total`, `verified`, `failed`, `cached`.
+
+Errors are JSON with `"success": false` and an `error` message: 400 bad input, 404 unsupported or in-development bank, 413 body too large, 422 the bank has no such receipt or its answer failed verification (with `checkedUrl`, the bank page cheki asked, when there is one), 429 rate limited (with a `Retry-After` header), 502 the bank is unreachable, with a `fallbackUrl` to open the receipt in a browser when the bank is geo-blocked. Confirmed results are cached in memory for 6 hours and come back with `"cached": true`; failures are never cached.
+
+Rate limits are per IP: verify 30 per minute, batch 5 per minute (each receipt in a batch also counts toward verify), parse and ocr 20 per minute. Telebirr and M-Pesa only answer Ethiopian IP addresses and the hosted API does not run in Ethiopia, so verifying them needs a self-hosted copy on an Ethiopian IP (`git clone https://github.com/1RB/cheki.git && cd cheki && docker compose up -d`).
+
+SDKs, all at version 1.6.0 and tested against one shared set of response fixtures: TypeScript `npm install cheki-verify`, Python `pip install cheki`, PHP `composer require cheki/cheki`, Go `go get github.com/1RB/cheki/sdks/go`, Dart `dart pub add cheki`. The Python package also installs a `cheki-verify` command that calls the hosted API (`cheki-verify cbe https://mbreciept.cbe.com.et/fHCxExampleRcpt01`). A clone of the repo has a Node CLI that runs the verifier locally: `npm run cli -- verify telebirr DET0SAMPLE` (commands `info`, `verify`, `verify-qr`, `health`). The npm package named `cheki` is an unrelated project, so do not use `npx cheki`. There is no MCP server.
+
+## Docs
+
+- [API reference](https://cheki.et/docs): every endpoint, request field, response field and error code
+- [Developers](https://cheki.et/developers): SDK quick starts for TypeScript, Python, PHP, Go and Dart
+- [Endpoints](https://cheki.et/endpoints): every bank's receipt formats and endpoint URLs, with a dated changelog
+- [Status](https://cheki.et/status): the daily endpoint health check per bank
+- [Banks](https://cheki.et/banks): live and in-development banks, with a page per bank
+
+## API
+
+- [POST /api/verify](https://cheki.et/docs#verify): verify one receipt
+- [POST /api/verify/batch](https://cheki.et/docs#batch): verify up to 20 receipts in one call
+- [GET /api/banks](https://cheki.et/api/banks): every bank with its id, status, beta flag and formats
+- [GET /api/health](https://cheki.et/docs#health): per-bank reachability, cached up to 5 minutes
+- [GET /api/receipt](https://cheki.et/docs#receipt): open the bank's own copy of a receipt (`bank`, `reference`, `account`) for CBE, Dashen, Zemen and ZamZam
+- [Errors](https://cheki.et/docs#errors): status codes and what to do about each
+- [POST /api/parse](https://cheki.et/docs): read receipt text a user pasted, or a page sent by the bookmarklet; the result is never verified
+- [POST /api/ocr](https://cheki.et/docs): read the reference or QR code from a receipt screenshot (multipart field `image`, up to 10 MB)
+
+## SDKs
+
+- [TypeScript: cheki-verify](https://www.npmjs.com/package/cheki-verify): npm package
+- [Python: cheki](https://pypi.org/project/cheki/): PyPI package, with the `cheki-verify` command
+- [PHP: cheki/cheki](https://packagist.org/packages/cheki/cheki): Packagist package
+- [Go: github.com/1RB/cheki/sdks/go](https://pkg.go.dev/github.com/1RB/cheki/sdks/go): Go module
+- [Dart: cheki](https://pub.dev/packages/cheki): pub.dev package
+- [Shared response fixtures](https://github.com/1RB/cheki/blob/main/sdks/fixtures/api-contract.json): the contract every SDK test suite decodes
+
+## Guides
+
+- [Payment verification API guide](https://cheki.et/guides/payment-verification-api-guide): integration patterns, error handling and a fraud checklist
+- [Ethiopian bank receipt formats](https://cheki.et/guides/ethiopian-bank-receipt-formats): what each bank's references look like
+- [CBE receipt QR codes](https://cheki.et/guides/cbe-receipt-qr-code): the Receipt ID and the legacy FT format
+- [BOA QR code receipts](https://cheki.et/guides/boa-qr-code-receipts): what a BOA QR holds and when it is only decoded
+- [Telebirr receipt QR code](https://cheki.et/guides/telebirr-receipt-qr-code): the Payment QR Code's format (base64, EMVCo-style TLV, CRC-16) and why it holds only the transaction number
+- [Self-hosting with Docker](https://cheki.et/guides/self-hosting-docker-guide): run cheki on an Ethiopian IP
+- [Payment fraud in Ethiopia](https://cheki.et/guides/payment-fraud-ethiopia): common fake receipt patterns and how to redact a receipt before sharing it
+
+## Optional
+
+- [Source code](https://github.com/1RB/cheki): MIT licensed; banks are defined in `src/lib/manifest/banks.json`
+- [Add a bank](https://cheki.et/guides/contribute-new-bank): how to contribute a new bank or receipt format
+- [Compare](https://cheki.et/compare): how cheki differs from check.et and verify.et, with their prices as listed on 15 October 2026
+- [About](https://cheki.et/about): maintained by Ray (@1RB on GitHub)
+- [Privacy](https://cheki.et/privacy): cheki.et counts anonymous, cookieless page views with Vercel Web Analytics; API calls are not counted and no receipt data is sent
+- [Contact](https://cheki.et/contact): questions, bug reports and bank requests
