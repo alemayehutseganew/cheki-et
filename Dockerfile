@@ -2,19 +2,19 @@ FROM node:20-alpine
 
 WORKDIR /app
 
-# Install pnpm
-RUN npm install -g pnpm
-
-# Copy everything directly (this will find package.json wherever it is)
+# Copy everything into the container
 COPY . .
 
-# Install dependencies and build
-RUN pnpm install --frozen-lockfile || pnpm install
-RUN pnpm build
+# Install dependencies using npm (since package-lock.json is present)
+RUN npm install
 
-# Set environment for AletCloud
+# Build the Next.js application
+RUN npm run build
+
+# Set environment variables for AletCloud
 ENV HOSTNAME=0.0.0.0
 ENV PORT=3000
 EXPOSE 3000
 
-CMD ["pnpm", "start"]
+# Start the application
+CMD ["npm", "start"]
